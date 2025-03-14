@@ -1,0 +1,217 @@
+name: moodle-plugin-checkout
+
+inputs:
+  repo:
+    description: >
+        Plugin repository & reference
+        Format: 'repo', 'owner/repo'
+    required: true
+    type: string
+  ref:
+    description: >
+        Plugin reference
+    required: true
+    type: string
+    default: 'HEAD'
+  moodle_dir:
+    description: >
+        Moodle directory
+    required: false
+    type: string
+    default: ${{ github.workspace }}
+
+runs:
+  using: 'composite'
+  env:
+      CLONE_DIR: ''
+      REPO: ''
+      REPO_NAME: ''
+      REF: ''
+  steps:
+    - name: Check if variables are set
+      shell: bash
+      run: |
+        if [ ! -f "$GITHUB_WORKSPACE/config.php" ] || [ ! -f "$GITHUB_WORKSPACE/version.php" ]; then
+          echo "Moodle is not installed"
+          exit 1
+        fi
+
+    - name: Find plugin repository
+      shell: bash
+      run: |
+        # Extract repo and ref out of string
+        repo=${{ inputs.repo }}
+        ref=${{ inputs.ref }}
+        name=''
+
+        # Check if REPO contains owner
+        if [[ "$repo" != *"/"* ]]; then
+          name=$repo
+          echo "REPO=${{ github.repository_owner }}/$repo" >> $GITHUB_ENV
+        else
+          name=$(echo $repo | cut -d'/' -f2)
+          echo "REPO=$repo" >> $GITHUB_ENV
+        fi
+
+        if [ -z "$repo" ]; then
+          echo "Unable to format repository from ${{ inputs.repo }}"
+          exit 1
+        fi
+
+        if [ -z "$name" ]; then
+          echo "Repository name not found in ${{ inputs.repo }}"
+          exit 2
+        fi
+
+        # Set REPO_NAME
+        echo "REPO_NAME=$name" >> $GITHUB_ENV
+
+        # Set CLONE_DIR
+        clone_dir=${{ inputs.moodle_dir }}/$name
+        echo "CLONE_DIR=$clone_dir" >> $GITHUB_ENV
+
+        # Set REF
+        echo "REF=$ref" >> $GITHUB_ENV
+
+        # Print info
+        printf "Repository: $repo"
+        printf "Repository name: $name"
+        printf "Clone directory: $clone_dir"
+        printf "Ref: $ref"
+
+    - name: Checkout plugin (${{ inputs.repo }})
+      if: ${{ env.REPO_NAME }} != '' && ${{ env.REPO_NAME }} != ${{ github.repository_owner }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.REPO }}
+        ref: ${{ env.REF }}
+        path: ${{ env.CLONE_DIR }}
+
+    - name: Move plugin to install directory
+      shell: bash
+      if: ${{ env.REPO }} != '' && ${{ env.REPO_NAME }} != '' && ${{ env.REPO_NAME }} != ${{ github.repository_owner }}
+      run: |
+        plugin_types_list="tool:/admin/tool
+        logstore:/admin/tool/log/store
+        factor:/admin/tool/mfa/factor
+        auth:/auth
+        availability:/availability/condition
+        block:/blocks
+        cachelock:/cache/locks
+        cachestore:/cache/stores
+        calendartype:/calendar/type
+        communication:/communication/provider
+        contenttype:/contentbank/contenttype
+        format:/course/format
+        coursereport:/course/report
+        customfield:/customfield/field
+        dataformat:/dataformat
+        enrol:/enrol
+        fileconverter:/files/converter
+        filter:/filter
+        gradeexport:/grade/export
+        gradingform:/grade/grading/form
+        gradeimport:/grade/import
+        gradereport:/grade/report
+        h5plib:/h5p/h5plib
+        antivirus:/lib/antivirus
+        editor:/lib/editor
+        atto:/lib/editor/atto/plugins
+        tiny:/lib/editor/tiny/plugins
+        mlbackend:/lib/mlbackend
+        local:/local
+        media:/media/player
+        message:/message/output
+        mnetservice:/mnet/service
+        mod:/mod
+        assignfeedback:/mod/assign/feedback
+        assignsubmission:/mod/assign/submission
+        bbbext:/mod/bigbluebuttonbn/extension
+        booktool:/mod/book/tool
+        datafield:/mod/data/field
+        datapreset:/mod/data/preset
+        forumreport:/mod/forum/report
+        ltiservice:/mod/lti/service
+        ltisource:/mod/lti/source
+        quizaccess:/mod/quiz/accessrule
+        quiz:/mod/quiz/report
+        scormreport:/mod/scorm/report
+        workshopallocation:/mod/workshop/allocation
+        workshopeval:/mod/workshop/eval
+        workshopform:/mod/workshop/form
+        paygw:/payment/gateway
+        plagiarism:/plagiarism
+        portfolio:/portfolio
+        qbank:/question/bank
+        qbehaviour:/question/behaviour
+        qformat:/question/format
+        qtype:/question/type
+        report:/report
+        repository:/repository
+        search:/search/engine
+        theme:/theme
+        profilefield:/user/profile/field
+        webservice:/webservice"
+
+        # Get component name from version.php
+        version_dir=$CLONE_DIR/version.php
+        if [ ! -f $version_dir ]; then
+          echo "version.php not found"
+          exit 4
+        fi
+
+        component=$(grep "\$plugin->component" $version_dir | awk -F"'" '{print $2}')
+        if [ -z "$component" ]; then
+          echo "Component not found"
+          exit 5
+        fi
+
+        printf "$component found\n"
+        printf "Searching installation directory...\n"
+
+        plugin_type=''
+        plugin_name=''
+        plugin_root=''
+        plugin_install_dir=''
+
+        for plugin_info in $plugin_types_list
+        do
+          plugin_type=$(echo $plugin_info | awk -F":" '{print $1}')
+          plugin_root=$(echo $plugin_info | awk -F":" '{print $2}')
+          if [[ $component == *$plugin_type* ]]; then
+            plugin_name=$(echo $component | awk -F"_" '{print $2}')
+            plugin_install_dir="$plugin_root/$plugin_name"
+            printf "Found installation dir: $plugin_install_dir\n"
+            break
+          fi
+        done
+
+        if [ -z "$plugin_root" ]; then
+          printf "Plugin root directory not found\n"
+          exit 6
+        fi
+
+        if [ -z "$plugin_install_dir" ]; then
+          printf "Plugin type not found\n"
+          exit 7
+        fi
+
+        if [ ! -d $plugin_root ]; then
+          printf "Creating directory: $plugin_root\n"
+          mkdir -p $plugin_root
+        fi
+
+        if [ -d $plugin_install_dir ]; then
+          printf "Removing existing plugin directory: $plugin_install_dir\n"
+          rm -rf $plugin_install_dir
+        fi
+
+        printf "Moving plugin to installation directory: $plugin_install_dir\n"
+        mv $CLONE_DIR $plugin_install_dir
+
+        if [ -d $CLONE_DIR ]; then
+          printf "Removing clone directory\n"
+          rm -rf $CLONE_DIR
+        fi
+
+        printf "Moved plugin was successful\n"
